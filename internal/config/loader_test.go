@@ -1805,8 +1805,8 @@ func TestResolveRoleAgentConfigFallsBackToDefaults(t *testing.T) {
 	t.Parallel()
 	// Non-existent paths should use defaults
 	rc := ResolveRoleAgentConfig("polecat", "/nonexistent/town", "/nonexistent/rig")
-	if !isClaudeCommand(rc.Command) {
-		t.Errorf("Command = %q, want claude or path ending in /claude (default)", rc.Command)
+	if rc.Command != "codex" {
+		t.Errorf("Command = %q, want codex (default)", rc.Command)
 	}
 }
 
@@ -1863,10 +1863,10 @@ func TestResolveWorkerAgentConfig_EmptyWorkerNameFallsBackToRole(t *testing.T) {
 		t.Fatalf("saving settings: %v", err)
 	}
 
-	// Empty worker name should fall back to crew role resolution (claude default)
+	// Empty worker name should fall back to crew role resolution (codex default)
 	rc := ResolveWorkerAgentConfig("", townRoot, rigPath)
-	if !isClaudeCommand(rc.Command) {
-		t.Errorf("expected claude for empty worker name, got command=%q", rc.Command)
+	if rc.Command != "codex" {
+		t.Errorf("expected codex for empty worker name, got command=%q", rc.Command)
 	}
 }
 
@@ -1903,8 +1903,8 @@ func TestBuildStartupCommand_WorkerAgentsViaCrew(t *testing.T) {
 			"GT_CREW": "glacier",
 		}
 		cmd := BuildStartupCommand(envVars, rigPath, "")
-		if strings.Contains(cmd, "codex") {
-			t.Errorf("expected non-codex for crew worker glacier (not in worker_agents), got: %q", cmd)
+		if !strings.Contains(cmd, "codex") {
+			t.Errorf("expected codex for crew worker glacier (not in worker_agents), got: %q", cmd)
 		}
 	})
 
@@ -1913,8 +1913,8 @@ func TestBuildStartupCommand_WorkerAgentsViaCrew(t *testing.T) {
 			"GT_ROLE": constants.RoleCrew,
 		}
 		cmd := BuildStartupCommand(envVars, rigPath, "")
-		if strings.Contains(cmd, "codex") {
-			t.Errorf("expected non-codex when GT_CREW not set, got: %q", cmd)
+		if !strings.Contains(cmd, "codex") {
+			t.Errorf("expected codex when GT_CREW not set, got: %q", cmd)
 		}
 	})
 }
@@ -1962,8 +1962,8 @@ func TestResolveWorkerAgentConfig_TownCrewAgents(t *testing.T) {
 
 	t.Run("worker not in town crew_agents falls through to defaults", func(t *testing.T) {
 		rc := ResolveWorkerAgentConfig("alice", townRoot, rigPath)
-		if !isClaudeCommand(rc.Command) {
-			t.Errorf("expected claude fallback for alice (not in crew_agents), got command=%q", rc.Command)
+		if rc.Command != "codex" {
+			t.Errorf("expected codex fallback for alice (not in crew_agents), got command=%q", rc.Command)
 		}
 	})
 
@@ -2043,7 +2043,13 @@ func TestWithRoleSettingsFlag_InjectsForClaude(t *testing.T) {
 		t.Fatalf("creating settings dir: %v", err)
 	}
 
-	// Default config (Claude agent) for polecat role
+	// Explicit Claude config for polecat role
+	townSettings := NewTownSettings()
+	townSettings.DefaultAgent = "claude"
+	if err := SaveTownSettings(TownSettingsPath(townRoot), townSettings); err != nil {
+		t.Fatalf("saving town settings: %v", err)
+	}
+
 	settings := NewRigSettings()
 	if err := SaveRigSettings(filepath.Join(settingsDir, "config.json"), settings); err != nil {
 		t.Fatalf("saving settings: %v", err)
@@ -5186,6 +5192,7 @@ func TestResolveRoleAgentConfig_WithEphemeralTier(t *testing.T) {
 
 	// Create minimal town settings
 	townSettings := NewTownSettings()
+	townSettings.DefaultAgent = "claude"
 	if err := SaveTownSettings(TownSettingsPath(townRoot), townSettings); err != nil {
 		t.Fatalf("SaveTownSettings: %v", err)
 	}
@@ -5216,6 +5223,7 @@ func TestResolveRoleAgentConfig_EphemeralOverridesPersistent(t *testing.T) {
 
 	// Create town settings with economy tier persisted
 	townSettings := NewTownSettings()
+	townSettings.DefaultAgent = "claude"
 	if err := ApplyCostTier(townSettings, TierEconomy); err != nil {
 		t.Fatalf("ApplyCostTier: %v", err)
 	}
@@ -5248,6 +5256,7 @@ func TestResolveRoleAgentConfig_EphemeralStandardSkipsPersisted(t *testing.T) {
 
 	// Create town settings with budget tier persisted (haiku for witness)
 	townSettings := NewTownSettings()
+	townSettings.DefaultAgent = "claude"
 	if err := ApplyCostTier(townSettings, TierBudget); err != nil {
 		t.Fatalf("ApplyCostTier: %v", err)
 	}
@@ -5558,6 +5567,7 @@ func TestBuildStartupCommandWithAgentOverride_NoDoubleSettingsOnNonOverridePath(
 	rigPath := filepath.Join(townRoot, "testrig")
 
 	townSettings := NewTownSettings()
+	townSettings.DefaultAgent = "claude"
 	if err := SaveTownSettings(TownSettingsPath(townRoot), townSettings); err != nil {
 		t.Fatalf("SaveTownSettings: %v", err)
 	}
