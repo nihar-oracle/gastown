@@ -33,6 +33,17 @@ type PatrolConfig struct {
 // Remaining stale beads are cleaned by burnPreviousPatrolWisps at cycle end.
 const maxStalePurgePerRun = 5
 
+func isPatrolBead(bead *beads.Issue, cfg PatrolConfig) bool {
+	if bead == nil {
+		return false
+	}
+	if strings.HasPrefix(bead.Title, cfg.PatrolMolName) {
+		return true
+	}
+	attachment := beads.ParseAttachmentFields(bead)
+	return attachment != nil && attachment.AttachedFormula == cfg.PatrolMolName
+}
+
 // findActivePatrol finds an active patrol molecule for the role.
 // Returns the patrol ID, display line, and whether one was found.
 // Returns an error if discovery fails (e.g. transient bd failure),
@@ -70,7 +81,7 @@ func findActivePatrol(cfg PatrolConfig) (patrolID, patrolLine string, found bool
 	var skipped int // tracks patrols skipped due to child-listing errors
 
 	for _, bead := range hookedBeads {
-		if !strings.HasPrefix(bead.Title, cfg.PatrolMolName) {
+		if !isPatrolBead(bead, cfg) {
 			continue
 		}
 
@@ -177,7 +188,7 @@ func burnPreviousPatrolWisps(cfg PatrolConfig) {
 
 	var burned int
 	for _, bead := range hookedBeads {
-		if !strings.HasPrefix(bead.Title, cfg.PatrolMolName) {
+		if !isPatrolBead(bead, cfg) {
 			continue
 		}
 
@@ -301,6 +312,15 @@ func autoSpawnPatrol(cfg PatrolConfig) (string, error) {
 		Dir(cfg.BeadsDir).
 		Run(); err != nil {
 		return patrolID, fmt.Errorf("created wisp %s but failed to hook", patrolID)
+	}
+
+	fieldUpdates := beadFieldUpdates{
+		AttachedFormula: cfg.PatrolMolName,
+		Vars:            append([]string(nil), cfg.ExtraVars...),
+		FormulaVars:     strings.Join(cfg.ExtraVars, "\n"),
+	}
+	if err := storeFieldsInBead(patrolID, fieldUpdates); err != nil {
+		return patrolID, fmt.Errorf("created wisp %s and hooked it, but failed to store formula attachment fields: %w", patrolID, err)
 	}
 
 	return patrolID, nil
