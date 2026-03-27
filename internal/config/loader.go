@@ -1145,7 +1145,7 @@ func resolveAgentConfigInternal(townRoot, rigPath string) *RuntimeConfig {
 	} else if townSettings.DefaultAgent != "" {
 		agentName = townSettings.DefaultAgent
 	} else {
-		agentName = "claude" // ultimate fallback
+		agentName = string(DefaultAgentPreset())
 	}
 
 	rc := lookupAgentConfig(agentName, townSettings, rigSettings)
@@ -1210,7 +1210,7 @@ func resolveAgentConfigWithOverrideInternal(townRoot, rigPath, agentOverride str
 	} else if townSettings.DefaultAgent != "" {
 		agentName = townSettings.DefaultAgent
 	} else {
-		agentName = "claude" // ultimate fallback
+		agentName = string(DefaultAgentPreset())
 	}
 
 	// If an override is requested, validate it exists
@@ -1306,7 +1306,7 @@ func lookupAgentConfigIfExists(name string, townSettings *TownSettings, rigSetti
 // Resolution order:
 //  1. Rig's RoleAgents[role] - if set, look up that agent
 //  2. Town's RoleAgents[role] - if set, look up that agent
-//  3. Fall back to ResolveAgentConfig (rig's Agent → town's DefaultAgent → "claude")
+//  3. Fall back to ResolveAgentConfig (rig's Agent → town's DefaultAgent → builtin default)
 //
 // If a configured agent is not found or its binary doesn't exist, a warning is
 // printed to stderr and it falls back to the default agent.
@@ -1608,7 +1608,7 @@ func resolveRoleAgentConfigCore(role, townRoot, rigPath string) *RuntimeConfig {
 			} else {
 				// Skip persisted RoleAgents to prevent stale config from leaking
 				// through, go straight to default resolution
-				// (rig's Agent → town's DefaultAgent → "claude").
+				// (rig's Agent → town's DefaultAgent → builtin default).
 				return resolveAgentConfigInternal(townRoot, rigPath)
 			}
 		}
@@ -1648,7 +1648,7 @@ func resolveRoleAgentConfigCore(role, townRoot, rigPath string) *RuntimeConfig {
 		}
 	}
 
-	// Fall back to existing resolution (rig's Agent → town's DefaultAgent → "claude")
+	// Fall back to existing resolution (rig's Agent → town's DefaultAgent → builtin default)
 	// Use internal version — caller already holds resolveConfigMu.
 	return resolveAgentConfigInternal(townRoot, rigPath)
 }
@@ -1698,7 +1698,7 @@ func ResolveRoleAgentName(role, townRoot, rigPath string) (agentName string, isR
 	if townSettings.DefaultAgent != "" {
 		return townSettings.DefaultAgent, false
 	}
-	return "claude", false
+	return string(DefaultAgentPreset()), false
 }
 
 // ResolveAgentConfigByName looks up an agent's RuntimeConfig by name without requiring

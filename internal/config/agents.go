@@ -556,9 +556,9 @@ func ListAgentPresets() []string {
 	return names
 }
 
-// DefaultAgentPreset returns the default agent preset (Claude).
+// DefaultAgentPreset returns the default agent preset.
 func DefaultAgentPreset() AgentPreset {
-	return AgentClaude
+	return AgentCodex
 }
 
 // RuntimeConfigFromPreset creates a RuntimeConfig from an agent preset.

@@ -347,7 +347,7 @@ func runConfigAgentList(cmd *cobra.Command, args []string) error {
 	// Show default
 	defaultAgent := townSettings.DefaultAgent
 	if defaultAgent == "" {
-		defaultAgent = "claude"
+		defaultAgent = string(config.DefaultAgentPreset())
 	}
 	fmt.Printf("\nDefault: %s\n", style.Bold.Render(defaultAgent))
 
@@ -551,7 +551,7 @@ func runConfigDefaultAgent(cmd *cobra.Command, args []string) error {
 		// Show current default
 		defaultAgent := townSettings.DefaultAgent
 		if defaultAgent == "" {
-			defaultAgent = "claude"
+			defaultAgent = string(config.DefaultAgentPreset())
 		}
 		fmt.Printf("Default agent: %s\n", style.Bold.Render(defaultAgent))
 		return nil

@@ -761,7 +761,7 @@ Use crew for your own workspace. Polecats are for batch work dispatch.
 	if err := os.MkdirAll(polecatsPath, 0755); err != nil {
 		return nil, fmt.Errorf("creating polecats dir: %w", err)
 	}
-	// Use the town's default_agent for scaffolding, falling back to claude.
+	// Use the town's default_agent for scaffolding, falling back to the builtin default.
 	// This ensures that when the town is configured with opencode (or another agent),
 	// the polecat directory gets the correct config dir (e.g. .opencode/) instead of .claude/.
 	townSettings, tsErr := config.LoadOrCreateTownSettings(config.TownSettingsPath(m.townRoot))
@@ -770,7 +770,7 @@ Use crew for your own workspace. Polecats are for batch work dispatch.
 	}
 	defaultAgentName := townSettings.DefaultAgent
 	if defaultAgentName == "" {
-		defaultAgentName = string(config.AgentClaude)
+		defaultAgentName = string(config.DefaultAgentPreset())
 	}
 	defaultPreset := config.GetAgentPresetByName(defaultAgentName)
 	if defaultPreset != nil && defaultPreset.HooksProvider != "" {
