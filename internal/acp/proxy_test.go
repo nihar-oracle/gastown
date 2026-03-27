@@ -540,8 +540,10 @@ func TestIntegration_CleanExitOnAgentTermination(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	exitScript := createTempScript(t, "#!/bin/sh\nexit 0\n")
-	defer os.Remove(exitScript)
+	exitCmd, err := exec.LookPath("true")
+	if err != nil {
+		t.Fatalf("failed to locate true: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -549,9 +551,16 @@ func TestIntegration_CleanExitOnAgentTermination(t *testing.T) {
 	p := NewProxy()
 
 	tmpDir := t.TempDir()
-	if err := p.Start(ctx, exitScript, nil, tmpDir); err != nil {
+	if err := p.Start(ctx, exitCmd, nil, tmpDir); err != nil {
 		t.Fatalf("failed to start proxy: %v", err)
 	}
+
+	p.stdinMux.Lock()
+	if p.agentStdin != nil {
+		_ = p.agentStdin.Close()
+		p.agentStdin = nil
+	}
+	p.stdinMux.Unlock()
 
 	// Drain stdout to prevent blocking, since we aren't calling Forward()
 	p.wg.Add(1)
@@ -865,13 +874,10 @@ func TestIntegration_FullLoop(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	mockAgent := createMockACPAgent(t, true)
-	defer os.Remove(mockAgent)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	p := NewProxy()
+	p, m := setupProxyWithMockAgent(t)
 
 	// Capture proxy's stdout (UI side)
 	var uiStdout bytes.Buffer
@@ -883,39 +889,36 @@ func TestIntegration_FullLoop(t *testing.T) {
 	uiStdinR, uiStdinW := io.Pipe()
 	p.stdin = uiStdinR
 
-	tmpDir := t.TempDir()
-	if err := p.Start(ctx, mockAgent, nil, tmpDir); err != nil {
-		t.Fatalf("failed to start proxy: %v", err)
-	}
-
-	// 1. Send messages from the UI
 	go func() {
-		defer uiStdinW.Close()
-		messages := []string{
-			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`,
-			`{"jsonrpc":"2.0","id":2,"method":"session/new"}`,
-			`{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"prompt":[{"type":"text","text":"hello"}]}}`,
-		}
-		for _, m := range messages {
-			fmt.Fprintln(uiStdinW, m)
-			time.Sleep(50 * time.Millisecond) // Give time for processing
-		}
-
-		// Wait for session ID to be set (completes handshake)
-		waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Second)
-		defer waitCancel()
-		if err := p.WaitForSessionID(waitCtx); err != nil {
-			t.Errorf("failed to get session ID: %v", err)
-			p.Shutdown()
-			return
-		}
-
-		// Wait a bit more for the prompt response to flow through
-		time.Sleep(500 * time.Millisecond)
-		p.Shutdown()
+		_ = m.Run(ctx)
 	}()
 
-	err := p.Forward()
+	done := make(chan error, 1)
+	go func() {
+		done <- p.Forward()
+	}()
+
+	// 1. Send messages from the UI
+	for _, msg := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"session/new"}`,
+		`{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"prompt":[{"type":"text","text":"hello"}]}}`,
+	} {
+		fmt.Fprintln(uiStdinW, msg)
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer waitCancel()
+	if err := p.WaitForSessionID(waitCtx); err != nil {
+		t.Fatalf("failed to get session ID: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	_ = uiStdinW.Close()
+	p.Shutdown()
+
+	err := <-done
 	if err != nil && !strings.Contains(err.Error(), "signal: killed") && !strings.Contains(err.Error(), "context canceled") {
 		t.Logf("Forward() returned error (expected during shutdown): %v", err)
 	}
@@ -950,8 +953,8 @@ func TestIntegration_FullLoop(t *testing.T) {
 	}
 
 	// Verify session ID was captured
-	if sid := p.SessionID(); sid != "test-session-12345" {
-		t.Errorf("expected session ID test-session-12345, got %q", sid)
+	if sid := p.SessionID(); sid != "mock-session-id-12345" {
+		t.Errorf("expected session ID mock-session-id-12345, got %q", sid)
 	}
 }
 
