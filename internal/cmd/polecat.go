@@ -865,6 +865,7 @@ func getGitState(worktreePath string) (*GitState, error) {
 		Clean:            true,
 		UncommittedFiles: []string{},
 	}
+	worktreeGit := git.NewGit(worktreePath)
 
 	// Check for uncommitted changes (git status --porcelain)
 	statusCmd := exec.Command("git", "status", "--porcelain")
@@ -888,51 +889,18 @@ func getGitState(worktreePath string) (*GitState, error) {
 		state.Clean = false
 	}
 
-	// Check for unpushed commits (git log origin/main..HEAD)
-	// We check commits first, then verify if content differs.
-	// After squash merge, commits may differ but content may be identical.
-	mainRef := "origin/main"
-	logCmd := exec.Command("git", "log", mainRef+"..HEAD", "--oneline")
-	logCmd.Dir = worktreePath
-	output, err = logCmd.Output()
+	unpushedCommits, err := detectRecoverableUnpushedCommits(worktreePath, worktreeGit)
 	if err != nil {
-		// origin/main might not exist - try origin/master
-		mainRef = "origin/master"
-		logCmd = exec.Command("git", "log", mainRef+"..HEAD", "--oneline")
-		logCmd.Dir = worktreePath
-		output, _ = logCmd.Output() // non-fatal: might be a new repo without remote tracking
+		return nil, err
 	}
-	if len(output) > 0 {
-		lines := splitLines(string(output))
-		count := 0
-		for _, line := range lines {
-			if line != "" {
-				count++
-			}
-		}
-		if count > 0 {
-			// Commits exist that aren't on main. But after squash merge,
-			// the content may actually be on main with different commit SHAs.
-			// Check if there's any actual diff between HEAD and main.
-			diffCmd := exec.Command("git", "diff", mainRef, "HEAD", "--quiet")
-			diffCmd.Dir = worktreePath
-			diffErr := diffCmd.Run()
-			if diffErr == nil {
-				// Exit code 0 means no diff - content IS on main (squash merged)
-				// Don't count these as unpushed
-				state.UnpushedCommits = 0
-			} else {
-				// Exit code 1 means there's a diff - truly unpushed work
-				state.UnpushedCommits = count
-				state.Clean = false
-			}
-		}
+	state.UnpushedCommits = unpushedCommits
+	if unpushedCommits > 0 {
+		state.Clean = false
 	}
 
 	// Check for stashes using Git.StashCount() which filters by current branch.
 	// Without branch filtering, worktrees see repo-wide stashes and produce
 	// false "NEEDS_RECOVERY" verdicts for worktrees with zero stashes of their own.
-	worktreeGit := git.NewGit(worktreePath)
 	if stashCount, stashErr := worktreeGit.StashCount(); stashErr == nil {
 		state.StashCount = stashCount
 		if stashCount > 0 {
@@ -941,6 +909,117 @@ func getGitState(worktreePath string) (*GitState, error) {
 	}
 
 	return state, nil
+}
+
+func detectRecoverableUnpushedCommits(worktreePath string, worktreeGit *git.Git) (int, error) {
+	baseRefs := candidateRecoveryBaseRefs(worktreeGit)
+	maxAhead := 0
+	foundComparableBase := false
+
+	for _, baseRef := range baseRefs {
+		exists, err := gitRefExists(worktreePath, baseRef)
+		if err != nil {
+			return 0, err
+		}
+		if !exists {
+			continue
+		}
+		foundComparableBase = true
+
+		aheadCount, err := gitRevListCount(worktreePath, baseRef+"..HEAD")
+		if err != nil {
+			continue
+		}
+		if aheadCount == 0 {
+			continue
+		}
+
+		sameContent, err := gitRefsHaveSameContent(worktreePath, baseRef, "HEAD")
+		if err != nil {
+			continue
+		}
+		if sameContent {
+			// If HEAD's tree matches any valid default-branch ref, the branch is
+			// effectively merged (for example after a squash merge) and does not
+			// represent recoverable work.
+			return 0, nil
+		}
+
+		if aheadCount > maxAhead {
+			maxAhead = aheadCount
+		}
+	}
+
+	if !foundComparableBase {
+		return 0, nil
+	}
+	return maxAhead, nil
+}
+
+func candidateRecoveryBaseRefs(worktreeGit *git.Git) []string {
+	defaultBranch := worktreeGit.RemoteDefaultBranch()
+	candidates := []string{
+		defaultBranch,
+		"origin/" + defaultBranch,
+		"main",
+		"origin/main",
+		"master",
+		"origin/master",
+	}
+
+	seen := make(map[string]struct{}, len(candidates))
+	refs := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		refs = append(refs, candidate)
+	}
+	return refs
+}
+
+func gitRefExists(worktreePath, ref string) (bool, error) {
+	cmd := exec.Command("git", "rev-parse", "--verify", ref+"^{commit}")
+	cmd.Dir = worktreePath
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 128 {
+			return false, nil
+		}
+		return false, fmt.Errorf("verifying git ref %s: %w", ref, err)
+	}
+	return true, nil
+}
+
+func gitRevListCount(worktreePath, revRange string) (int, error) {
+	cmd := exec.Command("git", "rev-list", "--count", revRange)
+	cmd.Dir = worktreePath
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("git rev-list %s: %w", revRange, err)
+	}
+
+	var count int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(output)), "%d", &count); err != nil {
+		return 0, fmt.Errorf("parsing git rev-list count for %s: %w", revRange, err)
+	}
+	return count, nil
+}
+
+func gitRefsHaveSameContent(worktreePath, left, right string) (bool, error) {
+	cmd := exec.Command("git", "diff", "--quiet", left, right)
+	cmd.Dir = worktreePath
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("git diff %s %s: %w", left, right, err)
+	}
+	return true, nil
 }
 
 // RecoveryStatus represents whether a polecat needs recovery or is safe to nuke.
