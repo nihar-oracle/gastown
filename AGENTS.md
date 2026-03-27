@@ -18,6 +18,14 @@ This project uses [beads](https://github.com/steveyegge/beads) for issue trackin
 
 Two CLIs: **bd** (issue CRUD) and **bv** (graph-aware triage, read-only).
 
+### Beads Path Discipline
+
+Run `bd` from the owning repo/rig worktree (for example `gastown/mayor/rig` for the
+gastown project database), or set `BEADS_DIR` explicitly when you mean a specific
+database. Running `bd doctor` from the town root (`~/gt`) inspects the HQ/town beads
+database instead, which can surface unrelated warnings about town-level metadata or
+legacy runtime files.
+
 ### bd: Issue Management
 
 ```bash

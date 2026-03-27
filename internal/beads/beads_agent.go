@@ -426,21 +426,68 @@ func (b *Beads) ResetAgentBeadForReuse(id, reason string) error {
 // then syncs the description's agent_state field to match (gt-ulom).
 func (b *Beads) UpdateAgentState(id string, state string) (retErr error) {
 	defer func() { telemetry.RecordAgentStateChange(context.Background(), id, state, nil, retErr) }()
+	target := b.resolveAgentBeadTarget(id)
 	// Update agent state using bd set-state command (bd 0.62.0+).
 	// Use runWithRouting so bd can resolve cross-prefix agent beads (e.g., wa-*
 	// agent beads from hq context) via routes.jsonl instead of BEADS_DIR.
 	_, err := b.runWithRouting("set-state", id, "agent_state="+state)
 	if err != nil {
-		return fmt.Errorf("updating agent state: %w", err)
+		if !isAgentStateSetStateFallback(err) {
+			return fmt.Errorf("updating agent state: %w", err)
+		}
+		// bd set-state currently fails on wisp-backed agent beads because the
+		// beads CLI still tries to update child_counters against the issues table.
+		// Fall back to direct SQL so the structured column stays aligned.
+		if sqlErr := target.updateAgentStateColumnsDirect(id, state); sqlErr != nil {
+			return fmt.Errorf("updating agent state: %w (sql fallback: %v)", err, sqlErr)
+		}
 	}
 
 	// Sync the description's agent_state field with the column (gt-ulom).
 	// Without this, the description stays stale (e.g., "spawning" after the
 	// column transitions to "working"), causing bd show and dashboards to
 	// display incorrect state after idle polecat reuse via gt sling.
-	_ = b.UpdateAgentDescriptionFields(id, AgentFieldUpdates{AgentState: &state})
+	if descErr := target.UpdateAgentDescriptionFields(id, AgentFieldUpdates{AgentState: &state}); descErr != nil {
+		return fmt.Errorf("syncing agent state description: %w", descErr)
+	}
 
 	return nil
+}
+
+func (b *Beads) resolveAgentBeadTarget(id string) *Beads {
+	targetDir := ResolveRoutingTarget(b.getTownRoot(), id, b.getResolvedBeadsDir())
+	if targetDir == "" || targetDir == b.getResolvedBeadsDir() {
+		return b
+	}
+	return NewWithBeadsDir(filepath.Dir(targetDir), targetDir)
+}
+
+func isAgentStateSetStateFallback(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "child_counters") &&
+		strings.Contains(msg, "fk_counter_parent")
+}
+
+func (b *Beads) updateAgentStateColumnsDirect(id, state string) error {
+	stateSQL := escapeSQLLiteral(state)
+	idSQL := escapeSQLLiteral(id)
+	queries := []string{
+		fmt.Sprintf("UPDATE wisps SET agent_state='%s' WHERE id='%s'", stateSQL, idSQL),
+		fmt.Sprintf("UPDATE issues SET agent_state='%s' WHERE id='%s'", stateSQL, idSQL),
+	}
+	for _, query := range queries {
+		if _, err := b.run("sql", query); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func escapeSQLLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
 }
 
 // SetHookBead and ClearHookBead removed (hq-l6mm5).

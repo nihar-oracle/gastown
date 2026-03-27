@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -115,6 +116,80 @@ func TestGetAgentBead_FallsBackToDescriptionAgentState(t *testing.T) {
 	}
 	if fields.AgentState != "spawning" {
 		t.Fatalf("fields.AgentState = %q, want %q", fields.AgentState, "spawning")
+	}
+}
+
+func TestUpdateAgentState_FallsBackForWispBackedAgents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-based mock bd script is unix-only")
+	}
+
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir .beads: %v", err)
+	}
+
+	logPath := filepath.Join(tmpDir, "bd.log")
+	binDir := t.TempDir()
+	scriptPath := filepath.Join(binDir, "bd")
+	script := `#!/bin/sh
+cmd=""
+for arg in "$@"; do
+  case "$arg" in
+    --*) ;;
+    *) cmd="$arg"; break ;;
+  esac
+done
+
+printf '%s|%s\n' "$cmd" "$*" >> "$MOCK_BD_LOG"
+
+case "$cmd" in
+  version)
+    exit 0
+    ;;
+  show)
+    printf '%s\n' "$MOCK_BD_SHOW_OUTPUT"
+    exit 0
+    ;;
+  set-state)
+    printf '%s\n' "$MOCK_BD_SET_STATE_ERR" >&2
+    exit 1
+    ;;
+  update|sql)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write mock bd: %v", err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("MOCK_BD_LOG", logPath)
+	t.Setenv("MOCK_BD_SHOW_OUTPUT", `[{"id":"gt-gastown-polecat-nux","title":"Polecat nux","issue_type":"agent","labels":["gt:agent"],"description":"role_type: polecat\nrig: gastown\nagent_state: spawning\nhook_bead: null"}]`)
+	t.Setenv("MOCK_BD_SET_STATE_ERR", "Error: generating child ID: get next child ID: update counter: Error 1452 (HY000): cannot add or update a child row - Foreign key violation on fk: `fk_counter_parent`, table: `child_counters`, referenced table: `issues`, key: [gt-gastown-polecat-nux]")
+
+	bd := New(tmpDir)
+	if err := bd.UpdateAgentState("gt-gastown-polecat-nux", "idle"); err != nil {
+		t.Fatalf("UpdateAgentState() error = %v", err)
+	}
+
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	log := string(logBytes)
+	if !strings.Contains(log, "UPDATE wisps SET agent_state='idle' WHERE id='gt-gastown-polecat-nux'") {
+		t.Fatalf("expected wisps SQL fallback in log, got:\n%s", log)
+	}
+	if !strings.Contains(log, "UPDATE issues SET agent_state='idle' WHERE id='gt-gastown-polecat-nux'") {
+		t.Fatalf("expected issues SQL sync in log, got:\n%s", log)
+	}
+	if !strings.Contains(log, "update|") || !strings.Contains(log, "agent_state: idle") {
+		t.Fatalf("expected description update with idle state in log, got:\n%s", log)
 	}
 }
 
