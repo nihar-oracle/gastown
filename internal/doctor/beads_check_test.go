@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -16,6 +17,104 @@ func TestNewPrefixMismatchCheck(t *testing.T) {
 
 	if !check.CanFix() {
 		t.Error("expected CanFix to return true")
+	}
+}
+
+func TestPrefixConflictCheck_NoConflicts(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	mayorDir := filepath.Join(tmpDir, "mayor")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	routesPath := filepath.Join(beadsDir, "routes.jsonl")
+	routesContent := `{"prefix":"hq-","path":"."}
+{"prefix":"gt-","path":"gastown/mayor/rig"}`
+	if err := os.WriteFile(routesPath, []byte(routesContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rigsPath := filepath.Join(mayorDir, "rigs.json")
+	rigsContent := `{
+		"version": 1,
+		"rigs": {
+			"gastown": {
+				"git_url": "https://github.com/example/gastown",
+				"beads": {
+					"prefix": "gt"
+				}
+			}
+		}
+	}`
+	if err := os.WriteFile(rigsPath, []byte(rigsContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	check := NewPrefixConflictCheck()
+	result := check.Run(&CheckContext{TownRoot: tmpDir})
+	if result.Status != StatusOK {
+		t.Fatalf("expected StatusOK, got %v: %s", result.Status, result.Message)
+	}
+}
+
+func TestPrefixConflictCheck_DetectsDuplicateRegistryPrefixes(t *testing.T) {
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	mayorDir := filepath.Join(tmpDir, "mayor")
+	if err := os.MkdirAll(beadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(mayorDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only one route exists, so the conflict is visible solely in rigs.json.
+	routesPath := filepath.Join(beadsDir, "routes.jsonl")
+	routesContent := `{"prefix":"hq-","path":"."}
+{"prefix":"as-","path":"agent_sandbox"}`
+	if err := os.WriteFile(routesPath, []byte(routesContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rigsPath := filepath.Join(mayorDir, "rigs.json")
+	rigsContent := `{
+		"version": 1,
+		"rigs": {
+			"agent_sandbox": {
+				"git_url": "https://github.com/example/agent_sandbox",
+				"beads": {
+					"prefix": "as"
+				}
+			},
+			"aicode_shepherd": {
+				"git_url": "https://github.com/example/aicode_shepherd",
+				"beads": {
+					"prefix": "as"
+				}
+			}
+		}
+	}`
+	if err := os.WriteFile(rigsPath, []byte(rigsContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	check := NewPrefixConflictCheck()
+	result := check.Run(&CheckContext{TownRoot: tmpDir})
+	if result.Status != StatusError {
+		t.Fatalf("expected StatusError, got %v: %s", result.Status, result.Message)
+	}
+	if len(result.Details) != 1 {
+		t.Fatalf("expected 1 detail, got %d: %v", len(result.Details), result.Details)
+	}
+	if !strings.Contains(result.Details[0], `Prefix "as-" used by:`) {
+		t.Fatalf("expected duplicate prefix detail, got %q", result.Details[0])
+	}
+	if !strings.Contains(result.Details[0], "rig:agent_sandbox") || !strings.Contains(result.Details[0], "rig:aicode_shepherd") {
+		t.Fatalf("expected both rig names in detail, got %q", result.Details[0])
 	}
 }
 
@@ -328,8 +427,8 @@ func TestDatabasePrefixCheck_NoBeadsDir(t *testing.T) {
 
 // mockDBPrefixGetter returns canned prefixes by directory for testing.
 type mockDBPrefixGetter struct {
-	prefixes   map[string]string // rigPath -> prefix
-	setCalls   []prefixSetCall   // recorded Fix calls (not used by getter, but handy for the mock)
+	prefixes map[string]string // rigPath -> prefix
+	setCalls []prefixSetCall   // recorded Fix calls (not used by getter, but handy for the mock)
 }
 
 type prefixSetCall struct {

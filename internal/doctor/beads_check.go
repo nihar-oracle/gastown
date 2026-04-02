@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/steveyegge/gastown/internal/beads"
@@ -31,24 +32,48 @@ func NewPrefixConflictCheck() *PrefixConflictCheck {
 // Run checks for duplicate prefixes in routes.jsonl.
 func (c *PrefixConflictCheck) Run(ctx *CheckContext) *CheckResult {
 	beadsDir := filepath.Join(ctx.TownRoot, ".beads")
+	conflicts := make(map[string][]string)
 
 	// Check if routes.jsonl exists
 	routesPath := filepath.Join(beadsDir, beads.RoutesFileName)
-	if _, err := os.Stat(routesPath); os.IsNotExist(err) {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusOK,
-			Message: "No routes.jsonl file (prefix routing not configured)",
+	if _, err := os.Stat(routesPath); err == nil {
+		routeConflicts, err := beads.FindConflictingPrefixes(beadsDir)
+		if err != nil {
+			return &CheckResult{
+				Name:    c.Name(),
+				Status:  StatusWarning,
+				Message: fmt.Sprintf("Could not check routes.jsonl: %v", err),
+			}
+		}
+		for prefix, paths := range routeConflicts {
+			for _, path := range paths {
+				conflicts[prefix] = append(conflicts[prefix], "route:"+path)
+			}
 		}
 	}
 
-	// Find conflicts
-	conflicts, err := beads.FindConflictingPrefixes(beadsDir)
-	if err != nil {
-		return &CheckResult{
-			Name:    c.Name(),
-			Status:  StatusWarning,
-			Message: fmt.Sprintf("Could not check routes.jsonl: %v", err),
+	// Also detect duplicate prefixes in rigs.json. A registry collision can exist
+	// even when routes.jsonl only contains one of the conflicting routes.
+	rigsPath := filepath.Join(ctx.TownRoot, "mayor", "rigs.json")
+	if rigsConfig, err := loadRigsConfig(rigsPath); err == nil {
+		rigsByPrefix := make(map[string][]string)
+		for rigName, rigEntry := range rigsConfig.Rigs {
+			if rigEntry.BeadsConfig == nil || rigEntry.BeadsConfig.Prefix == "" {
+				continue
+			}
+			prefix := rigEntry.BeadsConfig.Prefix
+			if !strings.HasSuffix(prefix, "-") {
+				prefix += "-"
+			}
+			rigsByPrefix[prefix] = append(rigsByPrefix[prefix], rigName)
+		}
+		for prefix, rigs := range rigsByPrefix {
+			if len(rigs) < 2 {
+				continue
+			}
+			for _, rigName := range rigs {
+				conflicts[prefix] = append(conflicts[prefix], "rig:"+rigName)
+			}
 		}
 	}
 
@@ -65,13 +90,14 @@ func (c *PrefixConflictCheck) Run(ctx *CheckContext) *CheckResult {
 	for prefix, paths := range conflicts {
 		details = append(details, fmt.Sprintf("Prefix %q used by: %s", prefix, strings.Join(paths, ", ")))
 	}
+	sort.Strings(details)
 
 	return &CheckResult{
 		Name:    c.Name(),
 		Status:  StatusError,
-		Message: fmt.Sprintf("%d prefix conflict(s) found in routes.jsonl", len(conflicts)),
+		Message: fmt.Sprintf("%d prefix conflict(s) found in routing configuration", len(conflicts)),
 		Details: details,
-		FixHint: "Use 'bd rename-prefix <new-prefix>' in one of the conflicting rigs to resolve",
+		FixHint: "Assign one rig a unique prefix, then update routes and database config to match",
 	}
 }
 
@@ -256,8 +282,8 @@ type rigsConfigBeadsConfig struct {
 }
 
 type rigsConfigFile struct {
-	Version int                         `json:"version"`
-	Rigs    map[string]rigsConfigEntry  `json:"rigs"`
+	Version int                        `json:"version"`
+	Rigs    map[string]rigsConfigEntry `json:"rigs"`
 }
 
 func loadRigsConfig(path string) (*rigsConfigFile, error) {
@@ -317,8 +343,8 @@ func (r *realDBPrefixGetter) GetDBPrefix(rigPath string) (string, error) {
 // would overwrite the shared database's prefix with the rig's prefix.
 type DatabasePrefixCheck struct {
 	FixableCheck
-	mismatches     []databasePrefixMismatch
-	prefixGetter   dbPrefixGetter
+	mismatches   []databasePrefixMismatch
+	prefixGetter dbPrefixGetter
 }
 
 type databasePrefixMismatch struct {
